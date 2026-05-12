@@ -15,6 +15,28 @@ import type { HostProbeSnapshot } from "./host-probe-types";
 const RESOURCE_URI = "ui://mcp-demo/mcp-app.html";
 const RESOURCE_URI_PROBE = "ui://mcp-demo/host-probe.html";
 
+type RawInitializeParams = {
+  protocolVersion?: unknown;
+  capabilities?: unknown;
+  clientInfo?: unknown;
+};
+
+async function getInitializeParamsFromStorage(
+  agent: unknown,
+): Promise<RawInitializeParams | undefined> {
+  const a = agent as {
+    getInitializeRequest?: () => Promise<
+      { params?: RawInitializeParams } | undefined
+    >;
+  };
+  try {
+    const req = await a.getInitializeRequest?.();
+    return req?.params;
+  } catch {
+    return undefined;
+  }
+}
+
 export class MyMCP extends McpAgent {
   server = new McpServer({
     name: "MCP App Demo",
@@ -127,19 +149,14 @@ export class MyMCP extends McpAgent {
         _meta: { ui: { visibility: ["app"] } },
       },
       async (snapshot) => {
-        // Merge server-side MCP-level info that the View can't see.
-        // Read from the raw initializeParams on the transport — the SDK's
-        // ClientCapabilitiesSchema strips non-standard keys via Zod.
-        const transport = (this as unknown as {
-          _transport?: {
-            initializeParams?: {
-              capabilities?: unknown;
-              clientInfo?: unknown;
-              protocolVersion?: unknown;
-            };
-          };
-        })._transport;
-        const raw = transport?.initializeParams;
+        // Read from the persisted JSON-RPC initialize request stored by
+        // McpAgent. The transport-level `initializeParams` is only set on
+        // cold-start `handlePostRequest`; after a Durable Object eviction
+        // it stays undefined, so the raw params survive only via storage.
+        // The SDK's ClientCapabilitiesSchema is also strict z.object — it
+        // strips non-standard keys (e.g. `extensions.*`) — so we cannot
+        // rely on getClientCapabilities() for raw payloads.
+        const raw = await getInitializeParamsFromStorage(this);
         const underlying = (this.server as { server?: unknown }).server as
           | {
               getClientVersion?: () => unknown;
@@ -189,20 +206,14 @@ export class MyMCP extends McpAgent {
         _meta: {},
       },
       async () => {
-        // Prefer the raw initializeParams captured by the WorkerTransport
-        // before Zod validation — the SDK's ClientCapabilitiesSchema is a
-        // strict z.object, so getClientCapabilities() silently drops any
-        // non-standard keys (e.g. `extensions.io.modelcontextprotocol/ui`).
-        const transport = (this as unknown as {
-          _transport?: {
-            initializeParams?: {
-              capabilities?: unknown;
-              clientInfo?: unknown;
-              protocolVersion?: unknown;
-            };
-          };
-        })._transport;
-        const raw = transport?.initializeParams;
+        // Read from the persisted JSON-RPC initialize request stored by
+        // McpAgent. The transport-level `initializeParams` is only set on
+        // cold-start `handlePostRequest`; after a Durable Object eviction
+        // it stays undefined, so the raw params survive only via storage.
+        // The SDK's ClientCapabilitiesSchema is also strict z.object — it
+        // strips non-standard keys (e.g. `extensions.io.modelcontextprotocol/ui`)
+        // — so we cannot rely on getClientCapabilities() for raw payloads.
+        const raw = await getInitializeParamsFromStorage(this);
 
         const underlying = (this.server as { server?: unknown }).server as
           | {
