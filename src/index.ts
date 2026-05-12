@@ -128,18 +128,38 @@ export class MyMCP extends McpAgent {
       },
       async (snapshot) => {
         // Merge server-side MCP-level info that the View can't see.
+        // Read from the raw initializeParams on the transport — the SDK's
+        // ClientCapabilitiesSchema strips non-standard keys via Zod.
+        const transport = (this as unknown as {
+          _transport?: {
+            initializeParams?: {
+              capabilities?: unknown;
+              clientInfo?: unknown;
+              protocolVersion?: unknown;
+            };
+          };
+        })._transport;
+        const raw = transport?.initializeParams;
         const underlying = (this.server as { server?: unknown }).server as
           | {
               getClientVersion?: () => unknown;
               getClientCapabilities?: () => unknown;
             }
           | undefined;
-        const clientInfo = underlying?.getClientVersion?.();
-        const clientCapabilities = underlying?.getClientCapabilities?.();
+        const clientInfo = raw?.clientInfo ?? underlying?.getClientVersion?.();
+        const clientCapabilities =
+          raw?.capabilities ?? underlying?.getClientCapabilities?.();
+        const parsedClientCapabilities = underlying?.getClientCapabilities?.();
+        const protocolVersion = raw?.protocolVersion ?? null;
 
         this.lastProbe = {
           ...(snapshot as unknown as HostProbeSnapshot),
-          mcp: { clientInfo, clientCapabilities },
+          mcp: {
+            protocolVersion,
+            clientInfo,
+            clientCapabilities,
+            parsedClientCapabilities,
+          },
         };
         this.lastProbeAt = new Date().toISOString();
         return {
@@ -164,28 +184,62 @@ export class MyMCP extends McpAgent {
           "client sent on the outer `initialize` request. The host-probe " +
           "View cannot see this layer (it only sees ui/initialize), so it " +
           "calls this tool to surface MCP-level capabilities like roots, " +
-          "sampling, elicitation, and tasks.",
+          "sampling, elicitation, tasks, and non-standard extensions.",
         inputSchema: z.object({}),
         _meta: {},
       },
       async () => {
+        // Prefer the raw initializeParams captured by the WorkerTransport
+        // before Zod validation — the SDK's ClientCapabilitiesSchema is a
+        // strict z.object, so getClientCapabilities() silently drops any
+        // non-standard keys (e.g. `extensions.io.modelcontextprotocol/ui`).
+        const transport = (this as unknown as {
+          _transport?: {
+            initializeParams?: {
+              capabilities?: unknown;
+              clientInfo?: unknown;
+              protocolVersion?: unknown;
+            };
+          };
+        })._transport;
+        const raw = transport?.initializeParams;
+
         const underlying = (this.server as { server?: unknown }).server as
           | {
               getClientVersion?: () => unknown;
               getClientCapabilities?: () => unknown;
             }
           | undefined;
-        const clientInfo = underlying?.getClientVersion?.() ?? null;
+
+        const clientInfo = raw?.clientInfo ?? underlying?.getClientVersion?.() ?? null;
         const clientCapabilities =
+          raw?.capabilities ?? underlying?.getClientCapabilities?.() ?? null;
+        const parsedClientCapabilities =
           underlying?.getClientCapabilities?.() ?? null;
+        const protocolVersion = raw?.protocolVersion ?? null;
+
         return {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify({ clientInfo, clientCapabilities }, null, 2),
+              text: JSON.stringify(
+                {
+                  protocolVersion,
+                  clientInfo,
+                  clientCapabilities,
+                  parsedClientCapabilities,
+                },
+                null,
+                2,
+              ),
             },
           ],
-          structuredContent: { clientInfo, clientCapabilities },
+          structuredContent: {
+            protocolVersion,
+            clientInfo,
+            clientCapabilities,
+            parsedClientCapabilities,
+          },
         };
       },
     );

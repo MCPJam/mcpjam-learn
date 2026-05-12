@@ -4,8 +4,12 @@ export interface HostProbeSnapshot {
   schemaVersion: 1;
   capturedAt: string;
   mcp?: {
+    protocolVersion?: unknown;
     clientInfo?: unknown;
+    /** Raw capabilities from the initialize request (pre-Zod). May include non-standard keys like `extensions.*`. */
     clientCapabilities?: unknown;
+    /** Capabilities after SDK Zod parse — strict subset of standard fields only. */
+    parsedClientCapabilities?: unknown;
   };
   uiInitialize: {
     protocolVersion?: string;
