@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <title>MCP Host Probe</title>
+</head>
+<body>
+  <main class="probe">
+    <header class="probe-header">
+      <h1>MCP Host Probe</h1>
+      <p id="status" class="probe-status">Initializing...</p>
+      <div class="probe-actions">
+        <button id="btn-csp-probes" type="button">Run CSP network probes</button>
+        <button id="btn-reupload" type="button">Re-upload with latest deltas</button>
+      </div>
+    </header>
+
+    <section id="section-ui" class="probe-section">
+      <h2><span>ui/initialize result</span> <button data-copy="ui" type="button">Copy</button></h2>
+      <pre>(pending)</pre>
+    </section>
+
+    <section id="section-runtime" class="probe-section">
+      <h2><span>Runtime (sandbox / CSP / navigator)</span> <button data-copy="runtime" type="button">Copy</button></h2>
+      <pre>(pending)</pre>
+    </section>
+
+    <section id="section-deltas" class="probe-section">
+      <h2><span>host-context-changed deltas</span> <button data-copy="deltas" type="button">Copy</button></h2>
+      <pre>(none yet)</pre>
+    </section>
+
+    <section id="section-raw" class="probe-section">
+      <h2><span>Raw incoming messages (first 20)</span> <button data-copy="raw" type="button">Copy</button></h2>
+      <pre>(pending)</pre>
+    </section>
+  </main>
+  <script type="module" src="/src/host-probe.ts"></script>
+</body>
+</html>

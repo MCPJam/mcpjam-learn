@@ -6,10 +6,11 @@
   "description": "MCP App that visually explains how tool inputs and outputs drive UI rendering",
   "scripts": {
     "build:ui": "cross-env INPUT=mcp-app.html vite build",
+    "build:probe": "cross-env INPUT=host-probe.html vite build",
     "build:authorize": "cross-env INPUT=authorize.html vite build",
-    "build": "npm run build:ui && npm run build:authorize",
+    "build": "npm run build:ui && npm run build:probe && npm run build:authorize",
     "deploy": "npm run build && wrangler deploy",
-    "dev": "npm run build:ui && wrangler dev",
+    "dev": "npm run build:ui && npm run build:probe && wrangler dev",
     "start": "wrangler dev",
     "cf-typegen": "wrangler types"
   },

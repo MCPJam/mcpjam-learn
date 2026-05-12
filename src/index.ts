@@ -8,15 +8,21 @@ import { McpAgent } from "agents/mcp";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { z } from "zod";
 import mcpAppHtml from "../dist/mcp-app.html";
+import hostProbeHtml from "../dist/host-probe.html";
 import authorizeHtml from "../dist/authorize.html";
+import type { HostProbeSnapshot } from "./host-probe-types";
 
 const RESOURCE_URI = "ui://mcp-demo/mcp-app.html";
+const RESOURCE_URI_PROBE = "ui://mcp-demo/host-probe.html";
 
 export class MyMCP extends McpAgent {
   server = new McpServer({
     name: "MCP App Demo",
     version: "1.0.0",
   });
+
+  lastProbe: HostProbeSnapshot | null = null;
+  lastProbeAt: string | null = null;
 
   async init() {
     registerAppTool(
@@ -68,7 +74,144 @@ export class MyMCP extends McpAgent {
       }),
     );
 
-    // ── Sample Tool (standard SDK method) ─────────────────────────
+    // ── Host Probe ───────────────────────────────────
+    // Renders a View that captures the host's ui/initialize handshake
+    // (hostCapabilities, hostInfo, hostContext, theming variables, etc.)
+    // plus runtime sandbox/CSP info. Used to replace educated-guess
+    // host presets in MCPJam/inspector with empirically captured data.
+
+    registerAppTool(
+      this.server,
+      "start-host-probe",
+      {
+        title: "Start Host Probe",
+        description:
+          "Render the host-probe View. The View inspects this MCP host's " +
+          "ui/initialize response (hostCapabilities, hostInfo, hostContext, " +
+          "theming variables, display modes) and runtime sandbox/CSP state, " +
+          "then uploads the snapshot back to the server. Retrieve the " +
+          "captured JSON with get-host-probe.",
+        inputSchema: z.object({}),
+        _meta: { ui: { resourceUri: RESOURCE_URI_PROBE } },
+      },
+      async () => ({
+        content: [
+          {
+            type: "text" as const,
+            text:
+              "Probe View is rendering. Once it has captured the host info " +
+              "it will upload via record-host-probe. Call get-host-probe to " +
+              "fetch the snapshot.",
+          },
+        ],
+      }),
+    );
+
+    registerAppTool(
+      this.server,
+      "record-host-probe",
+      {
+        title: "Record Host Probe Snapshot (internal)",
+        description:
+          "Internal sink invoked by the host-probe View. Not intended for " +
+          "direct invocation by the model.",
+        inputSchema: z.object({
+          schemaVersion: z.number(),
+          capturedAt: z.string(),
+          uiInitialize: z.any(),
+          runtime: z.any(),
+          deltas: z.array(z.any()),
+          errors: z.array(z.any()),
+          mcp: z.any().optional(),
+        }),
+        _meta: { ui: { visibility: ["app"] } },
+      },
+      async (snapshot) => {
+        // Merge server-side MCP-level info that the View can't see.
+        const underlying = (this.server as { server?: unknown }).server as
+          | {
+              getClientVersion?: () => unknown;
+              getClientCapabilities?: () => unknown;
+            }
+          | undefined;
+        const clientInfo = underlying?.getClientVersion?.();
+        const clientCapabilities = underlying?.getClientCapabilities?.();
+
+        this.lastProbe = {
+          ...(snapshot as unknown as HostProbeSnapshot),
+          mcp: { clientInfo, clientCapabilities },
+        };
+        this.lastProbeAt = new Date().toISOString();
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `recorded at ${this.lastProbeAt}`,
+            },
+          ],
+          structuredContent: { ok: true, recordedAt: this.lastProbeAt },
+        };
+      },
+    );
+
+    registerAppTool(
+      this.server,
+      "get-host-probe",
+      {
+        title: "Get Last Host Probe",
+        description:
+          "Return the most recent host snapshot captured by the host-probe " +
+          "View. Includes the host's ui/initialize response (hostCapabilities, " +
+          "hostInfo, hostContext, theming, display modes), runtime sandbox/CSP " +
+          "info, and the MCP-level clientCapabilities/clientInfo from the " +
+          "outer initialize. Run start-host-probe first if empty.",
+        inputSchema: z.object({}),
+      },
+      async () => {
+        if (!this.lastProbe) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: "no-probe-yet — run start-host-probe first",
+              },
+            ],
+            structuredContent: { status: "no-probe-yet" as const },
+          };
+        }
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(this.lastProbe, null, 2),
+            },
+          ],
+          structuredContent: {
+            status: "ok" as const,
+            recordedAt: this.lastProbeAt,
+            snapshot: this.lastProbe,
+          },
+        };
+      },
+    );
+
+    registerAppResource(
+      this.server,
+      RESOURCE_URI_PROBE,
+      RESOURCE_URI_PROBE,
+      { mimeType: RESOURCE_MIME_TYPE },
+      async () => ({
+        contents: [
+          {
+            uri: RESOURCE_URI_PROBE,
+            mimeType: RESOURCE_MIME_TYPE,
+            text: hostProbeHtml,
+          },
+        ],
+      }),
+    );
+
+    // ── Sample Tool (standard SDK method) ─────────────────────
     // Contrast with registerAppTool above: no UI resource, just I/O.
     this.server.tool(
       "greet",
@@ -86,7 +229,7 @@ export class MyMCP extends McpAgent {
       }),
     );
 
-    // ── Sample Prompt ─────────────────────────────────────────────
+    // ── Sample Prompt ────────────────────────────────────
     // Prompts are reusable message templates that clients can discover
     // and fill in with parameters.
     this.server.prompt(
@@ -115,7 +258,7 @@ export class MyMCP extends McpAgent {
       }),
     );
 
-    // ── Sample Resource ───────────────────────────────────────────
+    // ── Sample Resource ──────────────────────────────────
     // Resources expose read-only data that clients can fetch by URI.
     this.server.resource(
       "server-info",
@@ -148,7 +291,7 @@ export class MyMCP extends McpAgent {
   }
 }
 
-// ── Auth helpers ──────────────────────────────────────────────────
+// ── Auth helpers ───────────────────────────────────────────
 
 function getResourceMetadataUrl(request: Request): string {
   const url = new URL(request.url);
@@ -177,7 +320,7 @@ async function verifyToken(token: string, env: Env): Promise<boolean> {
   }
 }
 
-// ── Worker entrypoint ────────────────────────────────────────────
+// ── Worker entrypoint ──────────────────────────────────────
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext) {
