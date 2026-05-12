@@ -166,6 +166,7 @@ export class MyMCP extends McpAgent {
           "info, and the MCP-level clientCapabilities/clientInfo from the " +
           "outer initialize. Run start-host-probe first if empty.",
         inputSchema: z.object({}),
+        _meta: {},
       },
       async () => {
         if (!this.lastProbe) {
