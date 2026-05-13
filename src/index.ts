@@ -43,8 +43,23 @@ export class MyMCP extends McpAgent {
     version: "1.0.0",
   });
 
-  lastProbe: HostProbeSnapshot | null = null;
-  lastProbeAt: string | null = null;
+  // Probe state is persisted to DO storage. The Durable Object can hibernate
+  // between `record-host-probe` (write) and a later `assert-host-probe-*`
+  // (read), which would wipe in-memory fields. Same eviction issue we hit
+  // with `initializeParams` in commit e1a0ccf.
+  private async putProbe(probe: HostProbeSnapshot, at: string): Promise<void> {
+    await this.ctx.storage.put("lastProbe", probe);
+    await this.ctx.storage.put("lastProbeAt", at);
+  }
+  private async getProbe(): Promise<{
+    probe: HostProbeSnapshot | null;
+    at: string | null;
+  }> {
+    const probe =
+      (await this.ctx.storage.get<HostProbeSnapshot>("lastProbe")) ?? null;
+    const at = (await this.ctx.storage.get<string>("lastProbeAt")) ?? null;
+    return { probe, at };
+  }
 
   async init() {
     registerAppTool(
@@ -169,7 +184,7 @@ export class MyMCP extends McpAgent {
         const parsedClientCapabilities = underlying?.getClientCapabilities?.();
         const protocolVersion = raw?.protocolVersion ?? null;
 
-        this.lastProbe = {
+        const merged: HostProbeSnapshot = {
           ...(snapshot as unknown as HostProbeSnapshot),
           mcp: {
             protocolVersion,
@@ -178,15 +193,16 @@ export class MyMCP extends McpAgent {
             parsedClientCapabilities,
           },
         };
-        this.lastProbeAt = new Date().toISOString();
+        const recordedAt = new Date().toISOString();
+        await this.putProbe(merged, recordedAt);
         return {
           content: [
             {
               type: "text" as const,
-              text: `recorded at ${this.lastProbeAt}`,
+              text: `recorded at ${recordedAt}`,
             },
           ],
-          structuredContent: { ok: true, recordedAt: this.lastProbeAt },
+          structuredContent: { ok: true, recordedAt },
         };
       },
     );
@@ -270,7 +286,8 @@ export class MyMCP extends McpAgent {
         _meta: {},
       },
       async () => {
-        if (!this.lastProbe) {
+        const { probe, at } = await this.getProbe();
+        if (!probe) {
           return {
             content: [
               {
@@ -285,13 +302,13 @@ export class MyMCP extends McpAgent {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify(this.lastProbe, null, 2),
+              text: JSON.stringify(probe, null, 2),
             },
           ],
           structuredContent: {
             status: "ok" as const,
-            recordedAt: this.lastProbeAt,
-            snapshot: this.lastProbe,
+            recordedAt: at,
+            snapshot: probe,
           },
         };
       },
@@ -471,7 +488,8 @@ export class MyMCP extends McpAgent {
         _meta: {},
       },
       async ({ expectedAllowedUrls, expectedBlockedUrls }) => {
-        if (!this.lastProbe) {
+        const { probe: lastProbe } = await this.getProbe();
+        if (!lastProbe) {
           return {
             content: [
               {
@@ -482,7 +500,7 @@ export class MyMCP extends McpAgent {
             structuredContent: { pass: false, reason: "no-probe-yet" as const },
           };
         }
-        const probes = this.lastProbe.runtime.cspProbes ?? [];
+        const probes = lastProbe.runtime.cspProbes ?? [];
         if (probes.length === 0) {
           return {
             content: [
@@ -572,7 +590,7 @@ export class MyMCP extends McpAgent {
             {
               type: "text" as const,
               text: JSON.stringify(
-                { pass: allPass, checks, metaCsp: this.lastProbe.runtime.policies.metaCsp },
+                { pass: allPass, checks, metaCsp: lastProbe.runtime.policies.metaCsp },
                 null,
                 2,
               ),
@@ -581,7 +599,7 @@ export class MyMCP extends McpAgent {
           structuredContent: {
             pass: allPass,
             checks,
-            metaCsp: this.lastProbe.runtime.policies.metaCsp,
+            metaCsp: lastProbe.runtime.policies.metaCsp,
           },
         };
       },
@@ -609,7 +627,8 @@ export class MyMCP extends McpAgent {
         _meta: {},
       },
       async ({ expectedAllowedFeatures, expectedBlockedFeatures }) => {
-        if (!this.lastProbe) {
+        const { probe: lastProbe } = await this.getProbe();
+        if (!lastProbe) {
           return {
             content: [
               {
@@ -620,9 +639,9 @@ export class MyMCP extends McpAgent {
             structuredContent: { pass: false, reason: "no-probe-yet" as const },
           };
         }
-        const allowAttr = this.lastProbe.runtime.frame.allowAttr ?? "";
+        const allowAttr = lastProbe.runtime.frame.allowAttr ?? "";
         const permissionsPolicy =
-          this.lastProbe.runtime.policies.permissionsPolicy ?? "";
+          lastProbe.runtime.policies.permissionsPolicy ?? "";
         // A feature is considered granted if either the iframe's `allow`
         // attribute lists it, or document.permissionsPolicy.allowedFeatures()
         // reports it as allowed. Both sources are normalized to lowercased
