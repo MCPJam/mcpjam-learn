@@ -37,15 +37,49 @@ function render(key: SectionKey, value: unknown) {
   }
 }
 
+async function copyText(text: string): Promise<boolean> {
+  // Async Clipboard API needs `clipboard-write` permission policy on the
+  // iframe. Hosts that don't honor _meta.ui.permissions.clipboardWrite
+  // will reject it — fall back to execCommand via a hidden textarea.
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // fall through
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "-1000px";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 for (const btn of Array.from(
   document.querySelectorAll<HTMLButtonElement>("button[data-copy]"),
 )) {
-  btn.addEventListener("click", () => {
+  btn.addEventListener("click", async () => {
     const key = btn.dataset.copy as SectionKey;
     const pre = sections[key]?.querySelector("pre");
-    if (pre?.textContent) {
-      navigator.clipboard.writeText(pre.textContent).catch(() => {});
-    }
+    const text = pre?.textContent;
+    if (!text) return;
+    const original = btn.textContent;
+    const ok = await copyText(text);
+    btn.textContent = ok ? "Copied" : "Copy failed";
+    setTimeout(() => {
+      btn.textContent = original;
+    }, 1200);
   });
 }
 
