@@ -37,6 +37,39 @@ async function getInitializeParamsFromStorage(
   }
 }
 
+type McpInitInfo = {
+  protocolVersion: unknown;
+  clientInfo: unknown;
+  clientCapabilities: unknown;
+  parsedClientCapabilities: unknown;
+};
+
+// Pulls the outer MCP `initialize` params. Reads from persisted JSON-RPC
+// storage because the transport-level `initializeParams` is only set on
+// cold-start and is lost after Durable Object eviction. The SDK's
+// ClientCapabilitiesSchema is also strict z.object — it strips non-standard
+// keys (e.g. `extensions.io.modelcontextprotocol/ui`) — so for raw payloads
+// we cannot rely on getClientCapabilities().
+async function readMcpInit(
+  server: McpServer,
+  agent: unknown,
+): Promise<McpInitInfo> {
+  const raw = await getInitializeParamsFromStorage(agent);
+  const underlying = (server as { server?: unknown }).server as
+    | {
+        getClientVersion?: () => unknown;
+        getClientCapabilities?: () => unknown;
+      }
+    | undefined;
+  return {
+    protocolVersion: raw?.protocolVersion ?? null,
+    clientInfo: raw?.clientInfo ?? underlying?.getClientVersion?.() ?? null,
+    clientCapabilities:
+      raw?.capabilities ?? underlying?.getClientCapabilities?.() ?? null,
+    parsedClientCapabilities: underlying?.getClientCapabilities?.() ?? null,
+  };
+}
+
 export class MyMCP extends McpAgent {
   server = new McpServer({
     name: "MCP App Demo",
@@ -108,25 +141,46 @@ export class MyMCP extends McpAgent {
       {
         title: "Start Host Probe",
         description:
-          "Render the host-probe View. The View inspects this MCP host's " +
-          "ui/initialize response (hostCapabilities, hostInfo, hostContext, " +
-          "theming variables, display modes) and runtime sandbox/CSP state, " +
-          "then uploads the snapshot back to the server. Retrieve the " +
-          "captured JSON with get-host-probe.",
+          "Probe this MCP host. Returns the outer MCP `initialize` clientInfo " +
+          "and clientCapabilities (always available) plus the most recent " +
+          "host-probe View snapshot if one exists (hostCapabilities, hostInfo, " +
+          "hostContext, theming, display modes, runtime sandbox/CSP). On hosts " +
+          "that support MCP UI resources, this also (re)renders the host-probe " +
+          "View, which uploads a fresh snapshot via record-host-probe — call " +
+          "this tool again to read it. On hosts without UI support, the " +
+          "MCP-layer fields still come back as a tool result, so the server " +
+          "can be probed from any client.",
         inputSchema: z.object({}),
         _meta: { ui: { resourceUri: RESOURCE_URI_PROBE } },
       },
-      async () => ({
-        content: [
-          {
-            type: "text" as const,
-            text:
-              "Probe View is rendering. Once it has captured the host info " +
-              "it will upload via record-host-probe. Call get-host-probe to " +
-              "fetch the snapshot.",
-          },
-        ],
-      }),
+      async () => {
+        const mcp = await readMcpInit(this.server, this);
+        const status: "ok" | "no-snapshot-yet" = this.lastProbe
+          ? "ok"
+          : "no-snapshot-yet";
+        const payload = {
+          status,
+          mcp,
+          recordedAt: this.lastProbeAt,
+          snapshot: this.lastProbe,
+          note:
+            status === "no-snapshot-yet"
+              ? "View has not uploaded a snapshot yet. If this host supports " +
+                "MCP UI resources, it is rendering now — call this tool again " +
+                "shortly. If not, only the `mcp` block is available."
+              : "Snapshot is from the last View render. Call this tool again " +
+                "to re-render the View and refresh.",
+        };
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(payload, null, 2),
+            },
+          ],
+          structuredContent: payload,
+        };
+      },
     );
 
     registerAppTool(
@@ -149,34 +203,10 @@ export class MyMCP extends McpAgent {
         _meta: { ui: { visibility: ["app"] } },
       },
       async (snapshot) => {
-        // Read from the persisted JSON-RPC initialize request stored by
-        // McpAgent. The transport-level `initializeParams` is only set on
-        // cold-start `handlePostRequest`; after a Durable Object eviction
-        // it stays undefined, so the raw params survive only via storage.
-        // The SDK's ClientCapabilitiesSchema is also strict z.object — it
-        // strips non-standard keys (e.g. `extensions.*`) — so we cannot
-        // rely on getClientCapabilities() for raw payloads.
-        const raw = await getInitializeParamsFromStorage(this);
-        const underlying = (this.server as { server?: unknown }).server as
-          | {
-              getClientVersion?: () => unknown;
-              getClientCapabilities?: () => unknown;
-            }
-          | undefined;
-        const clientInfo = raw?.clientInfo ?? underlying?.getClientVersion?.();
-        const clientCapabilities =
-          raw?.capabilities ?? underlying?.getClientCapabilities?.();
-        const parsedClientCapabilities = underlying?.getClientCapabilities?.();
-        const protocolVersion = raw?.protocolVersion ?? null;
-
+        const mcp = await readMcpInit(this.server, this);
         this.lastProbe = {
           ...(snapshot as unknown as HostProbeSnapshot),
-          mcp: {
-            protocolVersion,
-            clientInfo,
-            clientCapabilities,
-            parsedClientCapabilities,
-          },
+          mcp,
         };
         this.lastProbeAt = new Date().toISOString();
         return {
@@ -187,112 +217,6 @@ export class MyMCP extends McpAgent {
             },
           ],
           structuredContent: { ok: true, recordedAt: this.lastProbeAt },
-        };
-      },
-    );
-
-    registerAppTool(
-      this.server,
-      "get-mcp-init",
-      {
-        title: "Get MCP Initialize Params",
-        description:
-          "Return the clientInfo and clientCapabilities the host's MCP " +
-          "client sent on the outer `initialize` request. The host-probe " +
-          "View cannot see this layer (it only sees ui/initialize), so it " +
-          "calls this tool to surface MCP-level capabilities like roots, " +
-          "sampling, elicitation, tasks, and non-standard extensions.",
-        inputSchema: z.object({}),
-        _meta: {},
-      },
-      async () => {
-        // Read from the persisted JSON-RPC initialize request stored by
-        // McpAgent. The transport-level `initializeParams` is only set on
-        // cold-start `handlePostRequest`; after a Durable Object eviction
-        // it stays undefined, so the raw params survive only via storage.
-        // The SDK's ClientCapabilitiesSchema is also strict z.object — it
-        // strips non-standard keys (e.g. `extensions.io.modelcontextprotocol/ui`)
-        // — so we cannot rely on getClientCapabilities() for raw payloads.
-        const raw = await getInitializeParamsFromStorage(this);
-
-        const underlying = (this.server as { server?: unknown }).server as
-          | {
-              getClientVersion?: () => unknown;
-              getClientCapabilities?: () => unknown;
-            }
-          | undefined;
-
-        const clientInfo = raw?.clientInfo ?? underlying?.getClientVersion?.() ?? null;
-        const clientCapabilities =
-          raw?.capabilities ?? underlying?.getClientCapabilities?.() ?? null;
-        const parsedClientCapabilities =
-          underlying?.getClientCapabilities?.() ?? null;
-        const protocolVersion = raw?.protocolVersion ?? null;
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(
-                {
-                  protocolVersion,
-                  clientInfo,
-                  clientCapabilities,
-                  parsedClientCapabilities,
-                },
-                null,
-                2,
-              ),
-            },
-          ],
-          structuredContent: {
-            protocolVersion,
-            clientInfo,
-            clientCapabilities,
-            parsedClientCapabilities,
-          },
-        };
-      },
-    );
-
-    registerAppTool(
-      this.server,
-      "get-host-probe",
-      {
-        title: "Get Last Host Probe",
-        description:
-          "Return the most recent host snapshot captured by the host-probe " +
-          "View. Includes the host's ui/initialize response (hostCapabilities, " +
-          "hostInfo, hostContext, theming, display modes), runtime sandbox/CSP " +
-          "info, and the MCP-level clientCapabilities/clientInfo from the " +
-          "outer initialize. Run start-host-probe first if empty.",
-        inputSchema: z.object({}),
-        _meta: {},
-      },
-      async () => {
-        if (!this.lastProbe) {
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: "no-probe-yet — run start-host-probe first",
-              },
-            ],
-            structuredContent: { status: "no-probe-yet" as const },
-          };
-        }
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(this.lastProbe, null, 2),
-            },
-          ],
-          structuredContent: {
-            status: "ok" as const,
-            recordedAt: this.lastProbeAt,
-            snapshot: this.lastProbe,
-          },
         };
       },
     );
@@ -361,19 +285,11 @@ export class MyMCP extends McpAgent {
         _meta: {},
       },
       async (expected) => {
-        const raw = await getInitializeParamsFromStorage(this);
-        const underlying = (this.server as { server?: unknown }).server as
-          | {
-              getClientVersion?: () => unknown;
-              getClientCapabilities?: () => unknown;
-            }
+        const mcp = await readMcpInit(this.server, this);
+        const clientInfo = mcp.clientInfo as
+          | Record<string, unknown>
           | undefined;
-        const clientInfo =
-          (raw?.clientInfo as Record<string, unknown> | undefined) ??
-          (underlying?.getClientVersion?.() as
-            | Record<string, unknown>
-            | undefined);
-        const protocolVersion = raw?.protocolVersion ?? null;
+        const protocolVersion = mcp.protocolVersion;
 
         const checks: Array<{
           field: string;
@@ -682,24 +598,6 @@ export class MyMCP extends McpAgent {
           },
         };
       },
-    );
-
-    // ── Sample Tool (standard SDK method) ─────────────────────
-    // Contrast with registerAppTool above: no UI resource, just I/O.
-    this.server.tool(
-      "greet",
-      "Returns a friendly greeting for the given name",
-      {
-        name: z.string().describe("The name of the person to greet"),
-      },
-      async ({ name }) => ({
-        content: [
-          {
-            type: "text" as const,
-            text: `Hello, ${name}! Welcome to the MCP App Demo server.`,
-          },
-        ],
-      }),
     );
 
     // ── Sample Prompt ────────────────────────────────────
